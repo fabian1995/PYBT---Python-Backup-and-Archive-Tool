@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+
+'''
+
+'''
+
+import os
+import datetime
+import argparse
+import json
+import shutil, errno
+
+# Name of the global config file
+conf_file = "pby_conf.json"
+
+# Directory where the global config file is located
+conf_dir  = os.path.dirname(os.path.realpath(__file__))
+
+# Full Path of the global config file, including filename
+conf_path = os.path.join(conf_dir, conf_file)
+
+# Configuration object (which is saved in the global config file)
+configuration = None
+
+
+# Name of the archive config/info file
+local_conf = ".archive.json"
+
+# Information stored in the archive config/info file
+local_info = None
+
+
+# Initialize command line parameters (for command execution see end of file)
+parser = argparse.ArgumentParser()
+parser.add_argument("action", help="What to do", type=str, default="info")
+parser.add_argument("basedir", help="Base directory", type=str, default=os.getcwd())
+parser.add_argument("--print-conf", dest="print_conf", help="Print the configuration", type=bool, default=False)
+parser.add_argument("-c", dest="targetdir", help="Target directory for various operations", type=str, default=None)
+args = parser.parse_args()
+
+# Parameter results
+action = args.action
+basedir = args.basedir
+targetdir = args.targetdir
+basepath = os.path.join(os.getcwd(), basedir)
+
+def conf_read():
+    global configuration
+    try:
+        f = open(conf_path, 'r')
+    except OSError:
+        print('[WARN] cannot open', conf_path, "trying to create a config file")
+        configuration = {}
+        return conf_write()
+    else:
+        configuration = json.load(f)
+        f.close()
+        return True
+
+def conf_write():
+    try:
+        f = open(conf_path, 'w')
+    except OSError:
+        print('[WARN] cannot write file ', conf_path)
+        return False
+    else:
+        json.dump(configuration, f)
+        f.close()
+        return True
+
+def local_read():
+    global local_info
+    try:
+        f = open(os.path.join(basepath, local_conf), 'r')
+    except OSError:
+        print('[WARN] cannot open archive file')
+    else:
+        local_info = json.load(f)
+        f.close()
+
+def local_write():
+    try:
+        f = open(os.path.join(basepath, local_conf), 'w')
+    except OSError:
+        print('[WARN] cannot write archive file ')
+        return False
+    else:
+        json.dump(local_info, f)
+        f.close()
+        return True
+
+def action_info():
+    '''
+    Print Information about the target directory
+    '''
+    print("+" + "-"*57 + "+" + "\n| Folder information:"+ 37*" " + "|\n" + "+" + "-"*57 + "+")
+
+    statbuf = os.stat(basedir)
+    datestring = datetime.datetime.fromtimestamp(
+        statbuf.st_mtime
+    ).strftime('%Y-%m-%d %H:%M:%S')
+
+    print("| Name:                " + repr(basedir).ljust(34) + " |")
+    print("| Path:                " + repr(basepath).ljust(34) + " |")
+    print("| Last Changed:        " + repr(datestring).ljust(34) + " |")
+    if local_info is None:
+        print("| Not archived" + 44*" " + "|")
+    else:
+        print("| Archive links to:    " + repr(local_info["archived"]).ljust(34) + " |")
+
+    print("+" + "-"*57 + "+")
+
+def action_compare(comp, isArchive):
+    print("  Local Folder: " + basedir)
+    print("Compare Folder: " + comp)
+    
+    localtimestamp = os.stat(basedir).st_mtime
+    comptimestamp  = os.stat(comp).st_mtime
+
+    if localtimestamp > comptimestamp:
+        print(" -> Local folder is newer")
+    elif localtimestamp < comptimestamp:
+        print(" -> Compare Folder is newer")
+    else:
+        print(" -> Folders are equal")
+
+def copy_folder(src, dest):
+    try:
+        shutil.copytree(src, dest)
+    except OSError as exc:
+        print("[ERROR] Can not copy " + src + " to " + dest)
+        return False 
+    else:
+        return True
+
+def action_create():
+    global local_info
+
+    if targetdir is None:
+        print("[ERROR] You must specify a target directory using -c [target]")
+        return
+
+    targetpath = os.path.join(configuration["adir"], targetdir)
+
+    if not copy_folder(basedir, targetpath):
+        print("[ERROR] Copy operation failed. Aborting...")
+        return
+
+    local_info = {"archived":targetpath}
+    
+    if local_write():
+        print("Successfully created archive to " + targetpath)
+    else:
+        print("[WARN] Could not link directory to its archive")
+
+def action_set_archive_dir():
+    '''
+    Save the archive directory to the config json file.
+    '''
+    global configuration
+    configuration["adir"] = os.path.join(os.getcwd(), basedir)
+    conf_write()
+
+def run_command():
+    '''
+    Executes the required action as specified with the command line parameters
+    '''
+
+    # Return error if given base directory is a file
+    if not os.path.isdir(basedir):
+        print("ERROR: '" + basedir + "' is not a directory")
+        return
+
+    # Return error if reading global config file failed (permission error, etc.)
+    if not conf_read():
+        print("ERROR reading/creating config file")
+        return
+
+    # Print current configuration if required
+    if args.print_conf:
+        print("Configuration loaded:")
+        print(" * Archive Directory:    " + configuration["adir"])
+
+    # Read configuration of the given base direcotry (archive?)
+    local_read()
+
+    # Action: Print inforation about the given bsae direcotry
+    if action == "info":
+        action_info()
+    # Action: Change the directory where archives are created to
+    elif action == "setadir":
+        action_set_archive_dir()
+    # Action: Compare the base directory with another direcotry
+    elif action == "compare" or action == "cmp":
+        # Base direcotry is not archived
+        if local_info is None:
+            if targetdir is None:
+                print("[WARN] Can not compare, listing infos:")
+                action_info()
+            else:
+                action_compare(targetdir, False)
+        # Base direcotry is archived
+        else:
+            action_compare(local_info["archived"], True)
+    # Action: Create an archive for the base direcotry
+    #         An archive name/path has to be specified
+    elif action == "store":
+        action_create()
+    # Action: Copy base direcotry to its archive location (update local changes)
+    elif action == "push":
+        pass
+    # Action: Copy archived directory contents to base directory (get archive version)
+    elif action == "pull":
+        pass
+    # Print help page if command is not valid
+    else:
+        parser.print_help()
+
+run_command()
+
+
+
